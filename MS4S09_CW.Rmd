@@ -1,0 +1,1098 @@
+---
+title: "MS4S09 - Amazon Book Reviews"
+author: "Moses Owhonda"
+output: 
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# INTRODUCTION
+
+> In today's digital age, online reviews play a significant role in shaping consumer decisions, particularly in the realm of book purchases. Understanding reading sentiments, preferences, and patterns hidden within these reviews can provide invaluable insights for publishers, authors, and potential readers alike.
+>
+> In this project, we aim to dive deep into an Amazon book reviews dataset, leveraging various analytical techniques to extract meaningful insights. The dataset comprises book reviews written by customers on *Amazon*, encompassing various features that can aid our analysis. Each row in the dataset represents a single review, with the primary focus being on the `Review_text` feature. Our primary goal is to analyze reviews and uncover general trends and patterns of readers' feedback. Our tasks include -
+
+-   Utilize pre-processing and text mining techniques to prepare and draw insights from the provided text data, accompanied by informative visualizations.
+-   Employ sentiment analysis techniques to understand and classify review sentiments, allowing us to gauge reader satisfaction levels.
+-   Implement topic modeling techniques to cluster reviews and identify hidden trends within the text, providing a structured overview of review segmentation.
+-   Utilize exploratory data analysis to derive meaningful insights from the text, leveraging all available variables within the dataset.
+
+#### Features Description:
+
+`Title`: *The title of the book.*
+
+`Book_Price`: *The price of the book.*
+
+`Reviewer_id`: *The ID of the user who rated the book.*
+
+`Rating`: *The rating given by the reviewer (ranging from 1 to 5).*
+
+`Time`: *Time of the review, converted to seconds from a reference start date.*
+
+`Review_title`: *The title or summary of the review.*
+
+`Review_text`: *The full text of the review.*
+
+`Found_helpful_ratio`: *Helpfulness rating of the review, voted by other users.*
+
+`Publisher`: *Name of the publisher of the book.*
+
+`First_author`: *The author of the book, or the first listed author if multiple.*
+
+`Genre`: *The genre of the book.*
+
+#### Load in necessary libraries
+
+```{r Load libraries, message=FALSE}
+libraries <- c("tm", "text", "tidytext", "ggplot2", "wordcloud", "syuzhet", "dplyr", "tibble", "textstem", "textdata", "tidyr", "Matrix", "topicmodels", "stringr", "reshape2", "LDAvis", "jsonlite", "quanteda", "textTinyR", "broom", "gridExtra")
+
+
+ # Library takes function names without quotes, character only must be used in a loop of this kind.
+for (lib in libraries) { 
+  library(lib, character.only=TRUE)
+}
+```
+
+#### Load Dataset
+
+```{r Load Dataset}
+# Define file path
+filepath <- 'C:\\Users\\HP\\Documents\\USW\\Courses\\Data Mining R\\MS4S09_CW_Book_Reviews.csv' 
+df_main <- as_tibble(read.csv(filepath, stringsAsFactors = FALSE)) # Since we have text data we do not want this read as a factor
+
+
+# Inspect summary and first five rows of data
+print(summary(df_main))
+print(head(df_main))
+
+# Confirm there are no null values in any of the columns
+print(colSums(is.na(df_main)))
+```
+
+# TEXT MINING
+
+Text mining is an analysis technique that involves extracting valuable insights and patterns from unstructured text data. It encompasses various tasks which ultimately enables us to uncover hidden information, sentiments, and trends within textual data, aiding in understanding user preferences, and gaining valuable insights from large volumes of text.
+
+#### Select relevant columns
+
+```{r Create id column & Select data}
+# Create an ID column
+df_main$id <- 1:nrow(df_main)
+
+# Reorder the columns to move the ID column to the first position
+df_main <- df_main %>%
+  select(id, everything())
+
+df <- df_main # Copy dataframe
+
+df <- df[,c(1,2,5,7,8)] # Select relevant columns
+print(tail(df))
+```
+
+#### Create Tokens
+
+```{r tokenize}
+# Tokenize review column by word
+word_tokenized_data <- df %>%
+  unnest_tokens(output = word, input = "Review_text", token = "words", to_lower = TRUE)
+
+bigram_tokenized_data <- df %>%
+  unnest_tokens(output = bigram, input = "Review_text", token = "ngrams", n=2, to_lower = TRUE)
+```
+
+Tokenization is a crucial step in natural language processing tasks, including text mining and sentiment analysis. By breaking down textual data into smaller units, such as words or n-grams (in this case, bigrams), tokenization helps in extracting meaningful insights from text data. These tokens serve as the building blocks for various analytical techniques, enabling efficient processing and analysis of textual information.
+
+#### Visualizations before cleaning
+
+```{r initial word plot}
+
+#Words Visualisation
+word_counts <- word_tokenized_data %>%
+  count(word, sort = TRUE) # Counts the occurences of each word and sorts.
+
+ggplot(word_counts[1:10, ], aes(x = reorder(word, n), y = n)) + # Plots first 10 rows of word counts, with word (ordered by n) on the x axis and n on the y axis
+  geom_col(fill = "blue") + # Sets colours of bars to blue
+  labs(x = "Words", y = "Frequency") + # Defines x and y labels
+  coord_flip() + # Flips coordinates so words go on the y axis (for readability)
+  theme_minimal() # Sets theme of visualisation
+
+
+# Bigram Visualization
+bigram_counts <- bigram_tokenized_data %>%
+  count(bigram, sort = TRUE) # Counts the occurences of each word and sorts.
+
+ggplot(bigram_counts[1:10, ], aes(x = reorder(bigram, n), y = n)) + # Plots first 10 rows of bigram counts, with bigram (ordered by n) on the x axis and n on the y axis
+  geom_col(fill = "blue") + # Sets colours of bars to blue
+  labs(x = "Words", y = "Frequency") + # Defines x and y labels
+  coord_flip() + # Flips coordinates so words go on the y axis (for readability)
+  theme_minimal() # Sets theme of visualisation
+```
+
+The plots illustrate the frequency of the most common words and bigrams in the dataset. These words are typical English terms, commonly known as "stop words," which do not convey significant meaning in the context of our analysis. Thus, we will conduct preprocessing procedures to remove these stopwords.
+
+#### Data cleaning for words
+
+```{r clean data}
+clean_tokens <- word_tokenized_data %>%
+  anti_join(stop_words, by = "word") # Removes stop words
+  
+clean_tokens$word <- gsub("[^a-zA-Z ]", "", clean_tokens$word) %>% # Remove special characters and numbers
+  na_if("") %>% # Replaces empty strings with NA
+  lemmatize_words() # Lemmatizes text
+
+clean_tokens <- na.omit(clean_tokens) # Removes null values
+```
+
+#### Data Cleaning for bigrams
+
+```{r clean bigram}
+clean_text <- Corpus(VectorSource(df$Review_text))
+
+# Preprocess the text
+clean_text <- tm_map(clean_text, content_transformer(tolower)) %>%
+  tm_map(content_transformer(function(x) gsub("[^a-zA-Z ]", "", x))) %>%
+  tm_map(removeWords, stopwords("english"))
+
+# Convert the corpus to a tidy dataframe with one row per word
+df_text <- data.frame(text = sapply(clean_text, function(x) paste(unlist(strsplit(as.character(x), " ")), collapse=" ")))
+
+
+df_text <- df_text %>%
+  mutate(text = ifelse(text == "", NA, text)) %>%
+  lemmatize_words() #lemmatize text
+
+df_text <- na.omit(df_text) # Removes null values
+
+# Generate bigrams using unnest_tokens
+bigrams_clean_tokens <- df_text %>%
+  unnest_tokens(output=bigram, input="text", token = "ngrams", n=2, to_lower = TRUE)
+```
+
+#### Visualizations after cleaning
+
+```{r clean plots}
+word_counts <- clean_tokens %>%
+  count(word, sort = TRUE)
+
+top_words <- top_n(word_counts,10,n)$word
+
+filtered_word_counts <- filter(word_counts, word %in% top_words)
+filtered_word_counts$word <- factor(filtered_word_counts$word, levels = top_words[length(top_words):1])
+
+ggplot(filtered_word_counts, aes(x = reorder(word, n), y = n)) +
+  geom_col(fill = "blue") +
+  labs(x = "Words", y = "Frequency") +
+  coord_flip() +
+  theme_minimal()
+
+#Bigram Visualization
+bigram_counts <- bigrams_clean_tokens %>%
+  count(bigram, sort = TRUE) # Counts the occurences of each word and sorts.
+
+ggplot(bigram_counts[1:10, ], aes(x = reorder(bigram, n), y = n)) + # Plots first 10 rows of word counts, with word (ordered by n) on the x axis and n on the y axis
+  geom_col(fill = "blue") + # Sets colours of bars to blue
+  labs(x = "Words", y = "Frequency") + # Defines x and y labels
+  coord_flip() + # Flips coordinates so words go on the y axis (for readability)
+  theme_minimal() # Sets theme of visualisation
+
+```
+
+Compared to the previous plots, which depicted the frequency of stopwords, these plots, after cleaning, display the frequency of more specific, content-related words. This offers deeper insight into the specific content of the text, rather than merely focusing on common words. For example, the word *book* has the highest frequency, occurring over 100,000 times, followed by *read* with a significantly lower frequency. All other words have frequencies under 50,000 occurrences. This indicates that the words *book* and *read* are prominent topics in the text.
+
+#### Create Word Cloud
+
+```{r Word Cloud}
+set.seed(7)
+# Plot word cloud
+suppressWarnings( # Suppress warnings about unplotted words
+  wordcloud(
+    words = word_counts$word,
+    freq = word_counts$n,
+    min.freq = 200, # Adjust the minimum frequency threshold
+    max.words = 1000, # Set maximum words to plot
+    random.order = FALSE,
+    random.color = FALSE,
+    colors = sample(colors(), size = 5)
+  )
+)
+```
+
+In the word cloud visualization, words are depicted in various sizes to represent their prominence or frequency. A notable observation from our analysis is the central and largest word, **book**, which signifies the primary theme of the word cloud. Surrounding **book**, we find smaller words closely related to reading and writing, such as **story**, **character**, **author**, and **publish**.
+
+# SENTIMENT ANALYSIS
+
+Sentiment analysis is a technique used to analyze and quantify the sentiment or emotional tone expressed in text data. It involves identifying and categorizing the polarity of opinions, attitudes, or emotions conveyed within textual content, typically as positive, negative, or neutral. For our sentiment analysis, we will explore the bing and afinn sentiment lexicons.
+
+```{r apply bing & afinn}
+# Create dataset containing only words with associated sentiment & adds sentiment column.
+
+sentiment_bing <- clean_tokens %>%
+  inner_join(get_sentiments("bing"), by = "word", relationship="many-to-many") # Joins lexicon to dataset using only words that are in both.
+
+sentiment_afinn <- clean_tokens %>%
+  inner_join(get_sentiments("afinn"), by = "word")
+
+
+# Calculate sentiment scores for each review
+score_bing <- sentiment_bing %>%
+  group_by(id) %>%
+  summarize(bing_sentiment = sum(sentiment == "positive") - sum(sentiment == "negative")) # Calculates sentiment score as sum of number of positive and negative sentiments
+
+score_afinn <- sentiment_afinn %>%
+  group_by(id) %>%
+  summarize(afinn_sentiment = sum(value))
+
+# Merge scores with dataframe
+df_sentiment <- df %>%
+  inner_join(score_bing, by = "id") %>%
+  inner_join(score_afinn, by = "id")
+
+# Preview sentiments data
+head(df_sentiment, 10)
+```
+
+The bing lexicon assigns sentiment scores based on word associations, while the AFINN lexicon provides numerical scores for polarity. Positive scores denote positive sentiment, while negative scores indicate negativity.
+
+The resulting data from the analysis includes sentiment scores from both lexicons, categorized into broader labels such as **Positive** or **Negative**.
+
+#### Inspection of Sentiment Analysis
+
+```{r inspect sentiments}
+# Print best reviews for both sentiments
+best_bing <- df_sentiment[order(df_sentiment$bing_sentiment, decreasing = TRUE)[1],"Review_text"]
+best_afinn <- df_sentiment[order(df_sentiment$afinn_sentiment, decreasing = T)[1],"Review_text"]
+
+for (review in best_bing){
+  print(review)
+}
+
+for (review in best_afinn){
+  print(review)
+}
+
+# Print worst reviews for both sentiments
+worst_bing <- df_sentiment[order(df_sentiment$bing_sentiment)[1],"Review_text"]
+worst_afinn <- df_sentiment[order(df_sentiment$bing_sentiment)[1],"Review_text"]
+
+for (review in worst_bing){
+  print(review)
+}
+
+for (review in worst_afinn){
+  print(review)
+}
+```
+
+Both sentiment lexicons appear to have the same worst review but different best reviews.
+
+#### Distribution of Sentiment Analysis
+
+```{r visualize sentiments}
+# Scatter Plot of Bing vs. AFINN Sentiment scores
+
+df_subset <- df_sentiment %>% sample_frac(0.1)  # for a sample fraction of the data
+
+ggplot(df_subset, aes(x = bing_sentiment, y = afinn_sentiment)) +
+  geom_point() +
+  labs(title = "Scatter Plot of Bing vs. AFINN Sentiment scores",
+       x = "Bing Sentiment Score",
+       y = "AFINN Sentiment Score")
+
+# Histograms of Bing vs. AFINN Sentiment scores
+df_plot <- rbind(
+  data.frame(sentiment = df_sentiment$bing_sentiment, type = "Bing"),
+  data.frame(sentiment = df_sentiment$afinn_sentiment, type = "AFINN") # Create a new dataframe for plotting
+)
+
+ggplot(df_plot, aes(x = sentiment, fill = type)) +
+  geom_histogram(binwidth = 3, alpha = 0.5, position = "identity") +
+  labs(x = "Sentiment Score", y = "Frequency", fill = "Sentiment Type",
+       title = "Overlaid Histograms of Bing and AFINN Sentiments") +
+  theme_minimal() +
+  scale_fill_manual(values = c("green", "red"))
+
+```
+
+The scatter plot shows a positive correlation between Bing Sentiment Score and AFINN Sentiment Score. As the Bing score increases, the AFINN score also tends to increase. This indicates that both scoring systems are likely measuring similar aspects of sentiment. The dense clustering of dots forming an upward trend from the bottom left to the top right further supports this observation.
+
+From the overlaid histograms, AFINN has a broader distribution, indicating a wider range of sentiment scores and it appears that bing sentiments have higher frequencies. Overall, both sentiment lexicons seem to have concentration of sentiment scores around 0.
+
+#### Sentiment Analysis by category
+
+```{r Visualize sentiment categories}
+# Convert sentiments to 'positive' and 'negative'
+df_sentiment$bing_sentiment_category <- ifelse(df_sentiment$bing_sentiment > 0, 'Positive', 'Negative')
+df_sentiment$afinn_sentiment_category <- ifelse(df_sentiment$afinn_sentiment > 0, 'Positive', 'Negative')
+
+# Create a table of sentiment counts
+bing_sentiment_counts <- table(df_sentiment$bing_sentiment_category)
+afinn_sentiment_counts <- table(df_sentiment$afinn_sentiment_category)
+
+# Convert the table to a data frame and rename the columns
+bing_chart <- as.data.frame(bing_sentiment_counts)
+afinn_chart <- as.data.frame(afinn_sentiment_counts)
+
+names(bing_chart) <- c('Category', 'Count')
+names(afinn_chart) <- c('Category', 'Count')
+
+# Combine the Bing and AFINN sentiment counts data frames
+combined_sentiment_counts <- merge(bing_chart, afinn_chart, by = "Category", all = TRUE)
+combined_sentiment_counts <- melt(combined_sentiment_counts, id.vars = "Category") # Reshape the data
+
+# Plot the clustered bar chart
+ggplot(combined_sentiment_counts, aes(x = Category, y = value, fill = variable)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.8) +
+  theme_minimal() +
+  ggtitle("Distribution of Sentiments (Bing & AFINN)") +
+  scale_fill_manual(values = c("blue", "green"), labels = c("Bing", "AFINN")) +  # Adjust color scheme
+  labs(x = "Sentiment Category", y = "Count")  # Add axis labels
+```
+
+According to both sentiment lexicons in the clustered bar chart, there are significantly more positive sentiments than negative ones in the dataset. However, it appears that AFINN has recorded a significantly higher count of positive sentiments compared to bing. Conversely, bing has a higher count of negative sentiments compared to AFINN.
+
+# TOPIC MODELLING
+
+Topic modeling is a technique used to discover latent thematic structures within a collection of text documents. It aims to automatically identify topics or themes that frequently co-occur in the corpus and assigns each document a distribution over these topics. We will explore *Latent Dirichlet Allocation* (LDA) to build our topic model.
+
+*LDA is a probabilistic model that represents documents as mixtures of topics, where each topic is characterized by a distribution of words. The model assumes that documents are generated based on a probabilistic process involving a mixture of topics, and words within documents are chosen according to the distribution of topics.*
+
+#### Data Selection
+
+```{r Select Data}
+tm <- df_main # Copy dataframe
+
+# Select Columns
+tm <- tm %>% 
+  select(c("id", "Review_title", "Review_text", "Publisher", "First_author", "Genre")) %>%
+  filter(str_count(Review_text) >= 200 & str_count(Review_text) <= 500)
+```
+
+```{r Filter based on specific genres}
+# Filter to Selected Categories
+genre_counts <- data.frame(table(tm$Genre))
+genre_counts <- genre_counts[order(genre_counts$Freq, decreasing = T),]
+genre_to_use <- c("Fiction", "Religion", "Business & Economics", "History", "Health & Fitness",
+                  "Biography & Autobiography", "Family & Relationships", "Cooking", "Computers")
+
+tm <- filter(tm, Genre %in% genre_to_use)
+```
+
+We filtered the data to include only the genres that are of interest for our topic modeling analysis. This is necessary because the original dataset contains a wide range of genres, but our focus is on a specific subset of genres deemed most relevant or frequent. By filtering the dataset to include only the selected genres, we reduce the complexity of the analysis and ensure that our topic model is tailored to the specific genres of interest. This approach enables us to focus our analysis on the most relevant genres while excluding less common or unrelated genres from the modeling process.
+
+Next, we will create our Term-Document Matrix.
+
+#### Creation of Term Document Matrix
+
+```{r Create TDM}
+# Convert text column to corpus
+corpus <- VCorpus(VectorSource(tm$Review_text))
+
+
+# Apply preprocessing
+corpus <- tm_map(corpus, content_transformer(tolower)) %>%
+  tm_map(content_transformer(function(x) gsub("[^a-zA-Z ]", "", x))) %>%
+  tm_map(removeWords, stopwords("english")) %>%
+  tm_map(removeWords, c("book", "read")) %>%
+  tm_map(content_transformer(textstem::lemmatize_strings))
+
+
+# Convert to a term document matrix
+tdm <- TermDocumentMatrix(corpus, control = list(wordLengths = c(4, 15)))
+
+tdm_matrix <- as.matrix(tdm)
+```
+
+The Term-Document Matrix represents the frequency of terms (words) across documents (reviews). The text data is preprocessed to convert it to lowercase, remove punctuation, stopwords, and specific words like *book* and *read*, and perform lemmatization to reduce words to their base form. The resulting TDM will serve as input for our topic modeling, allowing us to explore patterns and insights within the corpus of reviews. Next, we will examine and select the terms for our topic model.
+
+#### Term Selection
+
+```{r Word Frequency Distribution A}
+term_frequencies <- rowSums(tdm_matrix)
+
+# Create a data frame for plotting
+term_frequency_tm <- data.frame(term = names(term_frequencies), frequency = term_frequencies)
+
+# Sort the data frame by frequency in descending order and select the top 10
+top_terms <- term_frequency_tm %>%
+  arrange(desc(frequency)) %>%
+  head(10)
+
+# Display the top 10 terms
+print(top_terms)
+
+# Create the histogram
+ggplot(term_frequency_tm, aes(x = frequency)) +
+  geom_histogram(binwidth = 30) +
+  labs(title = "Histogram of Term Frequencies",
+       x = "Term Frequency",
+       y = "Number of Terms") +
+  theme_minimal()
+```
+
+The top words in this word frequency distribution predominantly consist of common English words, which may lack informative value. To enhance the relevance of our analysis within the selected book genres, we will apply filtering techniques to remove these common but less informative words. This refinement aims to highlight words that convey richer meaning within the context of our analysis.
+
+#### Filtering of Words
+
+```{r Word Filtering}
+# Find terms that appear in more than 10% of documents
+frequent_terms <- findFreqTerms(tdm, lowfreq = 0.10 * ncol(tdm_matrix))
+# Find terms that appear in less than 0.5% of documents
+rare_terms <- findFreqTerms(tdm, highfreq = 0.005 * ncol(tdm_matrix))
+
+print(frequent_terms) #Frequent Terms
+print(rare_terms[1:20]) #First 20 Infrequent Terms
+
+# Edit list of frequent words to keep useful ones
+to_keep <- c("love", "life") # These words could be meaningful in some of the selected genres
+
+to_remove <- frequent_terms[!frequent_terms %in% to_keep]
+
+filtered_tdm_matrix <- tdm_matrix[!rownames(tdm_matrix) %in% to_remove, ]
+filtered_tdm_matrix <- filtered_tdm_matrix[!rownames(filtered_tdm_matrix) %in% rare_terms, ]
+
+# Remove zero sum columns from tdm.
+column_sums <- colSums(filtered_tdm_matrix) # Calculate column sums
+
+# Identify columns that are all zeros
+zero_columns <- which(column_sums == 0)
+
+# Remove these columns
+if(length(zero_columns) > 0) {
+  # Remove these columns
+  filtered_tdm_matrix <- filtered_tdm_matrix[, -zero_columns]
+} else {
+  # If no columns are all zeros, just use the original matrix
+  print("No zero columns in TDM matrix")
+}
+```
+
+#### Word Frequency Distribution After Filtering
+
+```{r Word Frequency Distribution B}
+term_frequencies <- rowSums(filtered_tdm_matrix)
+
+# Create a data frame for plotting
+term_frequency_ <- data.frame(term = names(term_frequencies), frequency = term_frequencies)
+
+# Sort the data frame by frequency in descending order and select the top 30
+top_terms <- term_frequency_ %>%
+  arrange(desc(frequency)) %>%
+  head(30)
+
+# Display the top 30 terms
+print(top_terms)
+
+# Create the histogram
+ggplot(term_frequency_, aes(x = frequency)) +
+  geom_histogram(binwidth = 5) +
+  labs(title = "Histogram of Term Frequencies",
+       x = "Term Frequency",
+       y = "Number of Terms") +
+  theme_minimal()
+```
+
+Following the filtering process, we observed a shift towards content-related words such as *recipe*, *love*, *year*, etc., appearing among the top terms. These terms are more likely to provide meaningful insights into the content of the books within the selected genres.
+
+Given these results, we will proceed with further term selection to refine the terms used in our topic model. This additional refinement step aims to enhance the robustness of our analysis.
+
+#### Additional Term Selection
+
+```{r Further Selection}
+to_remove <- c("also", "even", "take", "little", "come", "understand", "easy", "find", "help", "feel", "thing", "need", "people", "anyone", "come", "keep", "must", "every", "start", "reader")
+
+filtered_tdm_matrix <- filtered_tdm_matrix[!rownames(filtered_tdm_matrix) %in% to_remove, ]
+
+term_frequencies <- rowSums(filtered_tdm_matrix)
+
+# Create a data frame for plotting
+term_frequency_df <- data.frame(term = names(term_frequencies), frequency = term_frequencies)
+
+# Sort the data frame by frequency in descending order and select the top 10
+top_terms <- term_frequency_df %>%
+  arrange(desc(frequency)) %>%
+  head(10)
+
+# Display the top 10 terms
+print(top_terms)
+```
+
+Through additional term selection, we've refined our filtering process to prioritize content-related words over generic ones. With this enhanced dataset, we're now prepared to create our topic model. This model will leverage the filtered text to extract meaningful themes and insights from the data.
+
+#### Create LDA Model
+
+We will utilize the *Coherence*, *Perplexity*, and *Log-likelihood* metrics to evaluate the performance of the LDA model in order to get the optimal value of ***k***.
+
+```{r Implement coherence, perplexity and log-likelihood to LDA model}
+# Tranpose term-document matrix
+dtm <- t(filtered_tdm_matrix)
+
+# Define function to compute coherence
+compute_coherence <- function(lda_model, dtm, top_n = 10) {
+  topics <- tidy(lda_model, matrix = "beta")
+  top_terms <- topics %>%
+    group_by(topic) %>%
+    top_n(top_n, beta) %>%
+    ungroup() %>%
+    arrange(topic, -beta)
+  
+  
+  term_vectors <- split(top_terms$term, top_terms$topic)
+  
+  coherence <- sapply(term_vectors, function(term_vector) {
+    term_pairs <- combn(term_vector, 2, simplify = FALSE)
+    pair_scores <- sapply(term_pairs, function(pair) {
+      pair_dtm <- dtm[, pair]
+      doc_freq <- rowSums(pair_dtm > 0)
+      min_freq <- min(doc_freq)
+      joint_freq <- sum(doc_freq == 2)
+      log((joint_freq + 1) / (min_freq + 1e-8))
+
+    })
+    mean(pair_scores)
+  })
+  
+  mean(coherence)
+}
+
+# Define the range of k values to test
+k_values <- seq(2, 12, by = 1)
+
+# Initialize vectors to store the perplexity, log-likelihood, and coherence for each k
+perplexities <- numeric(length(k_values))
+log_likelihoods <- numeric(length(k_values))
+coherences <- numeric(length(k_values))
+
+# Loop over k values
+for (i in seq_along(k_values)) {
+  k <- k_values[i]
+  
+  # Fit the LDA model
+  lda_model <- LDA(dtm, k = k, control=list(seed=1))
+  
+  # Compute and store the perplexity, log-likelihood, and coherence
+  perplexities[i] <- perplexity(lda_model)
+  log_likelihoods[i] <- logLik(lda_model)
+  coherences[i] <- compute_coherence(lda_model, dtm)
+}
+
+# Plot the perplexity, log-likelihood, and coherence against k
+par(mfrow = c(3, 1)) # Create a 3x1 sub plot
+
+# Plot the perplexity against k
+plot(k_values, perplexities, type = "b", main = "Perplexity vs Number of Topics", xlab = "Number of Topics", ylab = "Perplexity")
+
+# Plot the log-likelihood against k
+plot(k_values, log_likelihoods, type = "b", main = "Log-Likelihood vs Number of Topics", xlab = "Number of Topics", ylab = "Log-Likelihood")
+
+# Plot the coherence against k
+plot(k_values, coherences, type = "b", main = "Coherence vs Number of Topics", xlab = "Number of Topics", ylab = "Coherence")
+
+```
+
+While perplexity assesses how effectively a probability model predicts a sample, log-likelihood measures the likelihood of observing the data in the model, and coherence evaluates the semantic similarity of high-scoring words within each topic.
+
+We conducted model testing with ***k*** values ranging from 2 to 12, incremented by 1. The plots indicate fluctuating peaks, which stabilize after the coherence score peaks at 8 topics before slightly declining. This suggests that the topics are most semantically meaningful when ***k*** is 8, making it a potentially favorable choice.
+
+Perplexity and log-likelihood trends generally indicate that a higher number of topics improve the model fit, but neither plot provides a definitive optimal number of topics.
+
+#### Initialize LDA
+
+```{r Initialize LDA model using suggested optimal values}
+lda_model <- LDA(dtm, k=8, control=list(seed=123))
+```
+
+```{r LDA Visualisation, fig.width=10, fig.height=8}
+# Extract top terms associated with each topic into a tidy data frame format
+topics <- tidy(lda_model, matrix = "beta") # Extract the beta matrix (topic-term probabilities)
+
+# Sort and select the top 15 terms for each topic based on their topic-term probabilities
+top_terms <- topics %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+# Plot topics
+top_terms %>%
+  ggplot(aes(x =reorder(term, beta), y = beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+```
+
+Based on the terms associated with each topic in the model and the selected genres, we can infer the following:
+
+**Topic 1: Life and Love in Fiction & Biography:** While most words are general and could apply to various genres, terms like *life*, *love*, and *hope* may lean towards genres like **Fiction** or **Biography & Autobiography**. Additionally, words like *information*, *page*, and *series* could suggest a connection to **Computers**.
+
+**Topic 2: Christian Living & Fiction:** This topic contains words like *christian*, *believe*, and *live*, indicating an association with the **Religion** genre. Terms such as *love* and *ever* might also imply a link to **Fiction**, suggesting religious-themed fiction.
+
+**Topic 3: History, Business & Health Insights:** Dominant words like *money*, *history*, *year*, *family*, and *learn* may relate to **Business & Economics** and **History**, or possibly **Health & Fitness** due to terms like *style* and *woman*. This suggests a mix of content related to history, business, lifestyle, and women's health.
+
+**Topic 4: Culinary Delights & Family Connections:** Words like *recipe*, *family*, and *cookbook* primarily associate with **Cooking** and culinary topics. Additionally, terms like *friend*, *love*, and *live* may indicate a connection to **Family & Relationships**.
+
+**Topic 5: Fictional Narratives & Life Reflections:** Terms such as *novel*, *love*, *life*, and *series* potentially link to \***Fiction** or **Biography & Autobiography**, indicating a focus on fictional narratives and reflections on life experiences.
+
+**Topic 6: Learning & Life Lessons:** With terms like *excellent*, *provide*, *life*, and *learn*, this topic could fit into genres like **Fiction** or **Biography & Autobiography**, suggesting discussions about learning and life's lessons.
+
+**Topic 7: Inspirations and Wonderful Insights:** Words like *wonderful*, *highly*, and *insight* could associate with genres like **Fiction** or **Biography & Autobiography**, indicating discussions about amazing insights and inspirations.
+
+**Topic 8: Fictional Worlds & Cover Stories:** With words like *novel*, *cover*, and *life*, this topic may relate to the **Fiction** genre, suggesting discussions about fictional worlds and cover stories.
+
+Overall, reasonable coherence is observed in our topics. However, as LDA is a probabilistic model assuming each document (in this case, a book) is a mixture of a certain number of topics, and each word in the document is attributable to one of the document's topics, some degree of overlap between terms and associated genres is expected. LDA does not create mutually exclusive topics but rather identifies patterns and structures within data to understand underlying themes. Overlaps between topics can be part of these patterns and structures.
+
+Next, we will further analyze the results of the topic model.
+
+#### LDA Model Analysis
+
+```{r Analyze LDA model}
+# Get the document-topic probabilities
+gamma <- tidy(lda_model, matrix = "gamma")
+
+# Iterate through each unique topic and retrieve document’s content
+for (topic in unique(gamma$topic)) {
+  cat(paste("Topic", topic, "\n"))
+  top_docs <- gamma %>%
+    filter(topic == !!topic) %>%
+    top_n(5, gamma) %>% # Select the top 5 documents most associated with the topic
+    pull(document)
+  for (doc in top_docs) {
+    cat(paste("Document", doc, "\n"))
+    cat(as.character(corpus[[doc]]$content), "\n\n")
+  }
+}
+```
+
+Upon comparing with the document contents, our inference from the topics provides insights into potential connections to specific genres. However, it's observed that the documents cover a wider range of topics beyond traditional literary content. While the alignment between the inferred genres and the document content varies, most of the topics align well with the document content. This further highlights the complexity and diversity of the data.
+
+Next, we will implement a LDAvis visualization on our topic model.
+
+#### LDAvis Visualization
+
+```{r LDAvis visualisation}
+lda_vis_data <- createJSON(phi = posterior(lda_model)$terms, theta = posterior(lda_model)$topics,
+                          doc.length = rowSums(as.matrix(dtm)),vocab = colnames(as.matrix(dtm)),  
+                          term.frequency = colSums(as.matrix(dtm)))
+
+#library(servr)
+serVis(lda_vis_data)
+
+#servr::daemon_stop(1)
+```
+
+LDAvis is a valuable tool for interpreting the output of an LDA model.
+
+Upon examination of the visualization, we can discern the top 30 salient terms across all topics. The proximity of circles on the intertopic distance map signifies the similarity or dissimilarity between topics based on their content, and the scattered arrangement of circles in the visualization suggests varying degrees of similarity among topics.
+
+Overall, the visualization demonstrates some degree of topic coherence, reinforcing our earlier analysis of the LDA topic model.
+
+# EXPLORATORY DATA ANALYSIS
+
+In this section, we will carry out a range of exploratory data techniques on our features to draw meaningful insights from the data.
+
+```{r EDA}
+da <- df_main # Copy dataframe
+# Select Columns
+da <- da %>% 
+  select(c("id", "Title", "Book_Price", "Rating", "Review_title", "Review_text",
+           "Found_helpful_ratio", "Publisher", "First_author", "Genre"))
+```
+
+First, let's explore key statistics about our dataset including, how many books we have in our dataset, average review title and text lengths, average price of the books, average helpfulness ratio, and the most expensive book.
+
+```{r Exploratory stats}
+# Check number of books reviewed
+num_unique_books <- da %>%
+  distinct(Title) %>%
+  nrow()
+
+print(num_unique_books) # Print number of books in the dataset
+
+# Get most expensive book
+da[which.max(da$Book_Price), c("Title", "First_author", "Book_Price", "Rating", "Publisher")]
+
+# Function to count words
+count_words <- function(text) {
+  if (is.character(text) && !is.na(text)) {
+    words <- strsplit(text, "\\s+")[[1]]
+    return(length(words))
+  } else {
+    return(NA)
+  }
+}
+
+# Apply function to calculate average length of review text
+avg_review_text <- da %>%
+  mutate(word_count = sapply(Review_text, count_words)) %>%
+  group_by(Title) %>%
+  summarise(avg_word_count = round(mean(word_count, na.rm = TRUE)), .groups = "drop")
+
+# Apply function to calculate average length of review titles
+avg_review_title <- da %>%
+  mutate(word_count = sapply(Review_title, count_words)) %>%
+  group_by(Title) %>%
+  summarise(avg_word_count = round(mean(word_count, na.rm = TRUE)), .groups = "drop")
+
+# Calculate the average helpfulness ratio
+avg_helpfulness <- da %>%
+  group_by(Title) %>%
+  summarise(avg_helpfulness_ratio = mean(Found_helpful_ratio, na.rm = TRUE))
+
+# Calculate the average price of books
+avg_price <- da %>%
+  group_by(Title) %>%
+  summarise(avg_book_price = mean(Book_Price, na.rm = TRUE))
+```
+
+#### Exploratory Stats Visualization
+
+```{r Exploratory stats visualization, fig.width=10, fig.height=7}
+# Create a histogram of average book price
+price <- ggplot(avg_price, aes(x = avg_book_price)) +
+  geom_histogram(binwidth = 15, fill = "skyblue", color = "black") +
+  labs(title = "Average Price by Book",
+       x = "Average Price",
+       y = "Frequency")+
+  scale_x_continuous(breaks = seq(0, max(avg_price$avg_book_price), by = 100))
+
+
+# Create a histogram of average helpfulness ratio
+helpfulness <- ggplot(avg_helpfulness, aes(x = avg_helpfulness_ratio)) +
+  geom_histogram(binwidth = 0.01, fill = "skyblue", color = "black") +
+  labs(title = "Average Helpfulness Ratio by Book",
+       x = "Average Helpfulness Ratio",
+       y = "Frequency")
+
+# Plot distribution of average review titles
+title <- ggplot(avg_review_title, aes(x = avg_word_count)) +
+  geom_histogram(binwidth = 1, fill = "skyblue", color = "black") +
+  labs(title = "Average Review Title Length",
+       x = "Average Review Length",
+       y = "Frequency") +
+  scale_x_continuous(breaks = seq(0, max(avg_review_title$avg_word_count), by = 2))
+
+# Plot distribution of average review text
+text <- ggplot(avg_review_text, aes(x = avg_word_count)) +
+  geom_histogram(binwidth = 50, fill = "skyblue", color = "black") +
+  labs(title = "Average Review Text Length",
+       x = "Average Review Length",
+       y = "Frequency") +
+  scale_x_continuous(breaks = seq(0, max(avg_review_text$avg_word_count), by = 250))
+
+# Arrange plots in a 2x2 grid
+grid.arrange(price, helpfulness, title, text, nrow = 2, ncol = 2)
+```
+
+We have a total of 59,296 reviews in our dataset, which correspond to 17,939 books.
+
+From the plots, it's evident that the average price of most books falls between \$10 and \$20, with only a few books priced above \$150.
+
+Review titles tend to be succinct, averaging between 3 to 6 words. In contrast, review texts are more detailed, with an average length ranging between 50 and 200 words. On average, readers found the reviews helpful.
+
+The most expensive book in our dataset is **Visual Genetics Plus: Tutorial and Lab Simulations, Site License** authored by Alan W. Day, published by Jones & Bartlett Publishers, and priced at \$995.
+
+Next, we will explore the distribution of books to identify the most popular books by ratings and reviews, as well as the least popular ones in the dataset.
+
+#### Distribution of Books
+
+```{r Distribution of Books, fig.width=10, fig.height=7}
+# Calculate weighted score based on ratings and number of reviews
+book_counts <- da %>%
+  group_by(Title, First_author, Genre) %>%
+  summarise(avg_rating = mean(Rating),
+            total_reviews = n(), .groups = "drop") %>%
+  arrange(desc(total_reviews), desc(avg_rating))
+
+# Get book counts and corresponding genres with the weighted scores
+top_books <- head(book_counts[order(-book_counts$avg_rating * book_counts$total_reviews), ], 5)
+least_books <- tail(book_counts[order(-book_counts$avg_rating * book_counts$total_reviews), ], 5)
+
+# Print best books and worst books
+print(top_books)
+print(least_books)
+
+# Create the plot for top 5 popular books
+book_1 <- ggplot(top_books, aes(x = reorder(Title, total_reviews), y = total_reviews, fill = Genre)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(avg_rating, 1)), position = position_stack(vjust = 1.02),
+            color = "black", size = 3) +
+  labs(title = "Distribution of Top 5 Popular Books by Genre and Average Rating",
+       x = "Book Title", y = "Frequency", fill = "Genre") +
+  scale_fill_discrete(name = "Genre") +
+  coord_flip()
+
+# Create the plot for least 5 popular books
+book_2 <- ggplot(least_books, aes(x = reorder(Title, total_reviews), y = total_reviews, fill = Genre)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(avg_rating, 1)), position = position_stack(vjust = 1.02),
+            color = "black", size = 3) +
+  labs(title = "Distribution of Least 5 Popular Books by Genre and Average Rating",
+       x = "Book Title", y = "Frequency", fill = "Genre") +
+  scale_fill_discrete(name = "Genre") +
+  coord_flip()
+
+# Arrange plots in a 2x1 grid
+grid.arrange(book_1, book_2, nrow = 2)
+```
+
+Since most books have multiple ratings, we calculated weighted scores based on average ratings and the number of reviews for each book.
+
+From the plots, the most popular book is *Eldest (Inheritance, Book 2)* with 276 reviews and an average rating of 3.68, closely followed by *Great Expectations* and *Hannibal* with average ratings of 4.22 and 3.18, respectively.
+
+However, based on the weighted scores of ratings and reviews, the best book is *Great Expectations* by Charles Dickens, followed by *Eldest (Inheritance, Book 2)* by Christopher Paolini.
+
+The 5 least popular books mostly have a rating of 1 from one review each. The genres include Performing Arts, History, Biography & Autobiography, Business & Economics, and Sports & Recreation. They include books like *Writing Your First Play*, *Women in Early Medieval Europe, 400-1100 (Cambridge Medieval Textbooks)*, etc. The least popular is *Your 24/7 Online Job Search Guide* by Lamont Wood.
+
+Next, we will explore the distribution of genres.
+
+#### Distribution of Genres
+
+```{r Distirbution of Genres, fig.width=10, fig.height=6}
+# Filter most popular and least popular genres
+genre_counts <- data.frame(table(da$Genre)) %>% arrange(desc(Freq))
+
+top_genres = head(genre_counts, 20)
+least_genres = tail(genre_counts, 20)
+
+# Plot the distribution of top 20 genres
+p1 <- ggplot(top_genres, aes(x = reorder(Var1, -Freq), y=Freq)) +
+  geom_bar(stat="identity", fill = "skyblue", color = "black") +
+  coord_flip() +
+  labs(title = "Distribution of Top 20 Genres",
+       x = "Genre",
+       y = "Count") +
+  theme_minimal()
+
+# Plot the distribution of least 20 genres
+p2 <- ggplot(least_genres, aes(x = reorder(Var1, -Freq), y=Freq)) +
+  geom_bar(stat="identity", fill = "skyblue", color = "black") +
+  coord_flip() +
+  labs(title = "Distribution of Least 20 Genres",
+       x = "Genre",
+       y = "Count") +
+  theme_minimal()
+
+# Arrange plots in a 1x2 grid
+grid.arrange(p1, p2, ncol = 2)
+```
+
+The most popular genre is *Fiction*, with over 12,000 book reviews, followed by *Religion*, *Juvenile Fiction*, and *Biography & Autobiography*.
+
+Conversely, the least popular genres include *Science Fiction*, *English Poetry*, *Indians of North America*, and *Comic books, strips, etc*, each with just one review.
+
+Next, we will explore the genres and authors by ratings. Given the variability in the number of reviews per book, we will calculate the average ratings for each genre and author based on the number of reviews.
+
+#### Distribution of Authors and Genres by ratings
+
+```{r Authors and Genres by ratings, fig.width=10, fig.height=3}
+# Calculate average ratings for each genre
+genre_ratings <- da %>%
+  group_by(Genre) %>%
+  summarize(num_reviews = n(), avg_rating = mean(Rating, na.rm = TRUE)) %>% 
+  arrange(desc(num_reviews))
+
+# Calculate average ratings for each author
+author_ratings <- da %>%
+  group_by(First_author) %>%
+  summarise(avg_rating = mean(Rating, na.rm = TRUE), total_reviews = n()) %>%
+  arrange(desc(total_reviews), desc(avg_rating))
+
+
+# Plot the distribution of top 10 genres based on ratings
+genres = ggplot(head(genre_ratings, 5), aes(x = reorder(Genre, avg_rating), y = avg_rating)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Average Ratings by Genres",
+       x = "Genres",
+       y = "Average Rating") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8),  
+        axis.title.x = element_blank())
+
+
+# Plot the distribution of top 10 authors based on ratings
+authors = ggplot(head(author_ratings, 5), aes(x = reorder(First_author, avg_rating), y = avg_rating)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Average Ratings by Authors",
+       x = "Authors",
+       y = "Average Rating") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8), 
+        axis.title.x = element_blank()) 
+
+# Arrange plots in a 1x2 grid
+grid.arrange(genres, authors, ncol = 2)
+```
+
+From the plots, we observe that the authors with the highest average ratings include Gary Chapman, Jim Collins, Charles Dickens, Christopher Paolini, and Thomas Harris.
+
+While Fiction is the most popular genre reviewed, Juvenile Fiction has the highest average ratings per book review, followed closely by Religion and Biography & Autobiography.
+
+Next, we will examine the distributions of ratings and top publishers.
+
+#### Distribution of ratings and helpfulness ratio
+
+```{r Distributions of Ratings and Helpfulness ratio}
+# Group the data by Publisher and count the number of books for each publisher
+publishers <- data.frame(table(da$Publisher)) %>% arrange(desc(Freq))
+
+# Create a bar plot to visualize the distribution of books by top 10 publishers
+publish <- ggplot(data = head(publishers, 10), aes(x = reorder(Var1, -Freq), y = Freq)) +
+  geom_bar(stat="identity", fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Books by Publishers", x = "Publisher", y = "Number of Books")+
+  coord_flip()
+
+# Bar chart of ratings
+bar_ratings <- ggplot(df, aes(x = as.factor(Rating))) +
+  geom_bar(fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Ratings", x = "Rating", y = "Count") +
+  scale_x_discrete(labels = c("1", "2", "3", "4", "5"))
+
+
+# Arrange plots in a 2x1 grid
+grid.arrange(publish, bar_ratings, nrow = 2)
+
+
+# Calculate the percentage of ratings that are 5
+rate_5 <- mean(da$Rating == 5) * 100
+
+# Calculate the percentage of helpfulness ratio that are 0 and 1
+perc_0 <- mean(da$Found_helpful_ratio == 0) * 100
+perc_1 <- mean(da$Found_helpful_ratio == 1) * 100
+
+# Print the results
+cat("Helpfulness ratios that are either 0 or 1:", perc_0 + perc_1, "%\n")
+cat("Ratings that are 5:", rate_5, "%\n")
+```
+
+From the plot, we can see that the most popular publisher is Simon and Schuster, with over 3000 publications, followed by Penguin and John Wiley & Sons, each with over 2000 published books respectively.
+
+Moreover, it's notable that the majority of books received good ratings, with over 60% of them rated `5`. Additionally, close to 63% of readers either found the reviews and ratings extremely helpful or not helpful at all.
+
+Next, we will investigate if the number of reviews influences the price of a book and if the length of the review text influences the helpfulness ratio.
+
+#### Correlation analysis of reviews with price and helpfulness ratio
+
+```{r Correlation analysis of reviews with price and helpfulness ratio, fig.width=12, fig.height=5}
+# We will utilize the count_words function we defined earlier
+count_words
+
+# Apply function to calculate the length of each review & select relevant features
+corr_reviews <- da %>%
+  mutate(Review_length = sapply(Review_text, count_words)) %>%
+  group_by(Title) %>%
+  summarise(num_reviews = n(),
+            avg_review_length = round(mean(Review_length, na.rm = TRUE)),
+            avg_found_helpful_ratio = mean(Found_helpful_ratio, na.rm = TRUE),
+            avg_price = round(mean(Book_Price, na.rm = TRUE)),
+            .groups = "drop")
+
+
+# Create a scatter plot of reviews by price
+corr_review_price <- ggplot(corr_reviews, aes(x = num_reviews, y = avg_price)) +
+  geom_point() +
+  labs(x = "Number of Reviews", y = "Average Price") +
+  ggtitle("Correlation between Reviews and Book Price") +
+  theme_minimal()
+
+# Create a scatter plot of review length by helpfulness ratio
+corr_review_help <- ggplot(corr_reviews, aes(x = avg_review_length, y = avg_found_helpful_ratio)) +
+  geom_point() +
+  labs(x = "Average Review Length", y = "Average Helpfulness Ratio") +
+  ggtitle("Correlation between Review Length and Helpfulness Ratio") +
+  theme_minimal()
+
+# Arrange plots in a 1x2 grid
+grid.arrange(corr_review_price, corr_review_help, ncol = 2)
+
+# Compute the correlation between tyhe features
+corr_rhelp <- cor(corr_reviews$avg_review_length, corr_reviews$avg_found_helpful_ratio)
+corr_rprice <- cor(corr_reviews$num_reviews, corr_reviews$avg_price)
+
+cat("Correlation coefficient of average review length and average helpfulness ratio:", corr_rhelp, "%\n")
+cat("Correlation coefficient of number of reviews and average price:", corr_rprice, "%\n")
+```
+
+Based on the correlation coefficients and the scatterplots, which show no linear trend, it is evident that there is no linear relationship between both sets of features. This suggests that, on average, the length of review texts does not determine whether a user found the review helpful in deciding to read the book or not, and the number of reviews per book plays no influential role in the price of the book.
+
+Next, we will examine the relationship between the ratings and the sentiment scores from our sentiment analysis.
+
+#### Distribution of sentiment scores by ratings
+
+```{r Sentiment score vs ratings, fig.width=10, fig.height=4}
+# Preview sentiment data
+head(df_sentiment, 2)
+
+# Create violin plot of ratings and bing sentiment scores
+bing_violin <- ggplot(df_sentiment, aes(x = factor(Rating), y = bing_sentiment)) +
+  geom_violin() +
+  labs(x = "Rating", y = "Bing Sentiment Score") +
+  ggtitle("Distribution of Bing Sentiment Scores across Ratings") +
+  theme_minimal()
+
+# Create violin plot of ratings and afinn sentiment scores
+afinn_violin <- ggplot(df_sentiment, aes(x = factor(Rating), y = afinn_sentiment)) +
+  geom_violin() +
+  labs(x = "Rating", y = "Afinn Sentiment Score") +
+  ggtitle("Distribution of Afinn Sentiment Scores across Ratings") +
+  theme_minimal()
+
+# Arrange plots in a 1x2 grid
+grid.arrange(bing_violin, afinn_violin, ncol = 2)
+```
+
+In the violin plots for each rating, the bing sentiment scores are distributed symmetrically around zero, indicating roughly equal numbers of positive and negative sentiments for each rating score. The spread of sentiment scores appears to increase with the rating, suggesting that higher-rated reviews tend to express a wider range of sentiments.
+
+Similarly, the AFINN sentiment scores for each rating level are also distributed symmetrically around zero. However, the spread of AFINN sentiment scores is wider than that of the Bing sentiment scores, likely due to differences in how both sentiment lexicons calculate sentiment scores.
+
+Overall, there is an observed relationship between the rating and sentiment scores in both plots. However, this relationship is not clearly defined, indicating that a higher rating does not necessarily correspond to a higher sentiment score, and vice versa. This lack of clear correlation could be attributed to the nature of the reviews.
+
+# CONCLUSION
+
+In this project, we delved into a comprehensive analysis of Amazon book reviews utilizing various analytical techniques in R. Our exploration aimed to extract meaningful insights into reader sentiments, preferences, and trends hidden within the reviews. Through text mining, sentiment analysis, topic modeling, and exploratory data analysis, we uncovered valuable findings that shed light on the dynamics of the reviews. Our dataset contained 17,939 books which have a total of 59,296 reviews. The key findings from our analysis include -
+
+#### Key Findings
+
+-   **Text Mining:** Through tokenization and preprocessing, we identified prominent themes such as "book," "read," and related terms, indicating a strong focus on literature and reading habits among reviewers.
+
+-   **Sentiment Analysis:** Utilizing Bing and AFINN sentiment lexicons, we found a prevalence of positive sentiments across reviews. However, variations existed between the two lexicons, suggesting nuanced interpretations of sentiment.
+
+-   **Topic Modelling:** Employing Latent Dirichlet Allocation (LDA), we identified eight distinct topics, ranging from fictional narratives to culinary delights, providing insights into the diverse content covered in the reviews.
+
+-   **Exploratory Data Analysis:** While "Fiction" emerged as the most reviewed genre, deeper analysis revealed variations in reader preferences across genres. Genres such as "Juvenile Fiction" and "Religion" exhibited higher average ratings per review, indicating potential areas of interest for targeted marketing efforts.
+
+Certain authors, including Gary Chapman, Jim Collins, and Charles Dickens, consistently garnered high average ratings, underscoring the importance of author reputation in driving reader satisfaction and engagement.
+
+While a correlation between ratings and sentiment scores was observed, the relationship was not definitive. Higher ratings did not consistently correspond to higher sentiment scores, indicating the multifaceted nature of reader perceptions and preferences.
+
+The most reviewed book is `Eldest (Inheritance, Book 2)` by Christopher Paolini however, based on ratings and number of reviews, the best selling book is Charles Dickens' `Great Expectations`.
+
+The price of the books were not influenced by the number of reviews, and more readers found the reviews very helpful than not.
+
+#### Recommendations for Future Work
+
+-   Exploration of advanced sentiment analysis techniques, such as aspect-based sentiment analysis, to dissect sentiments based on specific aspects of the books (e.g., plot, characters, writing style).
+
+-   Conducting genre-specific analyses to uncover unique patterns and preferences within each genre, providing targeted insights for publishers and authors.
+
+-   Augmentation of the analysis with external datasets, such as sales data or author backgrounds, to enrich understanding and predictions of book success factors.
+
+-   Development of predictive models to forecast book ratings based on various features, enabling proactive decision-making for publishers and authors.
+
+
+#### Limitations
+
+-   Data Bias: Due to limited computational resource, the analysis was restricted to the selection bias in reviews and genre categorization.
+
+-   Sentiment Lexicons: The reliance on pre-existing sentiment lexicons might have potentially introduce limitations in capturing the complexity of nuanced sentiments expressed in reviews.
+
+-   Data Quality: Quality issues such as incomplete or inaccurate reviews could have impacted the reliability of the analysis outcomes.
+
+-   Feature Limitations: The dataset's limited features might have constrained the depth of analysis, necessitating further data enrichment for comprehensive insights.
+
+-   Topic Interpretation: While topic modeling revealed distinct themes, the interpretation of topics is subjective and might vary based on individual perspectives.
